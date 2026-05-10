@@ -84,10 +84,13 @@ git push -u origin main
 | 现象 | 解决 |
 |---|---|
 | `cuda is_available() = False` | 右侧 Accelerator 选成了 "None",改 P100,重启 session |
-| `pip install arc-agi` 失败 | Internet 没开。右侧 toggle 打开重试 |
+| `pip install` 失败 | Internet 没开。右侧 toggle 打开重试 |
 | `ARC_API_KEY length: 0` | Secret 没保存,或 key 名拼错 |
 | benchmark 跑到一半 OOM | 不太可能(34M 模型),但若出现就 `--device cpu` 兜底(超慢) |
 | 12h 到了被踢 | 看 `runs/<tag>/results.json` 已存了几个游戏,新 session 用同 tag 续跑会跳过 |
+| `cudaErrorNoKernelImageForDevice` | Kaggle 预装的 torch 不支持 P100 的 sm_60。`requirements-kaggle.txt` 已固定 torch 2.5.1+cu121,确保 cell 3 跑过即可 |
+| `SyntaxError: unterminated string literal` 在 cell 3 | 你把 `!python -c "..."` 拆成多行了。Jupyter 的 `!cmd` 是单行 magic,不能跨行 |
+| 改了 `requirements-kaggle.txt` 但 Kaggle 没生效 | Kaggle 跑的是上传的 .ipynb 副本 + cell 1 fetch 出来的 repo 文件;notebook 本身需 re-import,repo 文件 cell 1 自动同步 |
 
 ## 跟自托管 P100 (Vast.ai) 的差异
 

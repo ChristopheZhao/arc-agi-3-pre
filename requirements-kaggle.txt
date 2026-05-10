@@ -1,0 +1,22 @@
+# Kaggle P100 environment pin
+# ---
+# Use:  !pip uninstall -y -q torch torchvision torchaudio
+#       !pip install -q -r requirements-kaggle.txt
+#
+# Why a separate file:
+# - pyproject.toml pins torch to the CPU index for local WSL development.
+# - Kaggle preinstalls torch 2.10+cu128 which dropped Pascal sm_60 — fails on
+#   P100. We need torch <= 2.5.x with cu121 to get sm_60 wheels.
+# - This file is the single source of truth for the Kaggle env so the
+#   notebook stays a thin shell.
+#
+# When you change anything here, also bump the corresponding cell in
+# notebooks/benchmark_p100.ipynb if the install command shape changes.
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.5.1
+arc-agi==0.9.8
+tensorboard>=2.17.0
+numpy>=2.0
+pillow
