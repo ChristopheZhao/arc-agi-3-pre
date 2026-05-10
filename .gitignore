@@ -27,6 +27,9 @@ frames/
 # Per-machine downloaded game assets (Arcade.make() lazy-fetches them)
 environment_files/
 
+# Playwright MCP browser snapshots (debugging artifacts)
+.playwright-mcp/
+
 # Editor / OS
 .idea/
 .vscode/
