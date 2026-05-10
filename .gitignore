@@ -24,6 +24,9 @@ frames/
 *.pkl
 *.npz
 
+# Per-machine downloaded game assets (Arcade.make() lazy-fetches them)
+environment_files/
+
 # Editor / OS
 .idea/
 .vscode/
