@@ -156,21 +156,28 @@ class SGBaselineAgent:
     # ---- public API ----
 
     def maybe_reset_for_new_level(self, frame: FrameData, *, reset_model: bool = True) -> bool:
-        """Detect level-up and (optionally) wipe model+buffer (SG's default)."""
-        if frame.levels_completed != self.current_levels_completed:
-            LOG.info(
-                "level transition %d -> %d at action %d",
-                self.current_levels_completed, frame.levels_completed, self.action_counter,
-            )
-            self.experience_buffer.clear()
-            self.experience_hashes.clear()
-            if reset_model:
-                self._init_model()
-            if self.segmenter is not None:
-                self.segmenter.reset()
+        """Detect level-up and (optionally) wipe model+buffer (SG's default).
+
+        First-frame seed: when current_levels_completed == -1 (initial state) we
+        only adopt the value silently — no model reset, no buffer wipe — so the
+        flag actually controls behavior on *real* level transitions only."""
+        if frame.levels_completed == self.current_levels_completed:
+            return False
+        if self.current_levels_completed == -1:
             self.current_levels_completed = frame.levels_completed
-            return True
-        return False
+            return False
+        LOG.info(
+            "level transition %d -> %d at action %d",
+            self.current_levels_completed, frame.levels_completed, self.action_counter,
+        )
+        self.experience_buffer.clear()
+        self.experience_hashes.clear()
+        if reset_model:
+            self._init_model()
+        if self.segmenter is not None:
+            self.segmenter.reset()
+        self.current_levels_completed = frame.levels_completed
+        return True
 
     def _frame_2d(self, frame: FrameData) -> np.ndarray:
         """Last subframe as a (64, 64) int64 palette grid."""

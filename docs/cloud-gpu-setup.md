@@ -6,12 +6,20 @@
 
 | 机型 | 提供方 | $/h(参考) | 适合 |
 |---|---|---|---|
-| **NVIDIA L4 24GB** | Lambda / GCP | $0.5–0.8 | **推荐**:34M 参数轻松,vRAM 富裕 |
-| NVIDIA A10 24GB | Vast.ai | $0.4–0.7 | 同上,价格敏感 |
-| NVIDIA RTX 3090 24GB | Vast.ai | $0.3–0.5 | 最便宜,FP32 性能足够 |
-| Colab Pro T4/L4 | Google | $10/月 | 起步可选,但 12h 上限 |
+| **NVIDIA Tesla P100 16GB** | Kaggle / Vast.ai | **$0**(Kaggle)/ $0.2–0.4 | **当前选择**:Kaggle 周配 30h 免费,Pascal compute_60 |
+| NVIDIA L4 24GB | Lambda / GCP | $0.5–0.8 | 比 P100 快 2–3×,如果预算够 |
+| NVIDIA A10 24GB | Vast.ai | $0.4–0.7 | 同 L4 档,价格敏感 |
+| NVIDIA RTX 3090 24GB | Vast.ai | $0.3–0.5 | FP32 强,FP16 也好 |
+| Colab Pro T4/L4 | Google | $10/月 | 起步可选,12h 上限 |
 
 **模型很小**(34M 参数,~130MB FP32),不需要 A100/H100。**带宽和 CPU 数量** 比 GPU 算力更影响 SG(每 5 步训一次,batch 64,瓶颈在数据流)。
+
+### P100 具体笔记
+- **架构**:Pascal,compute capability **6.0**。CUDA 12.1 / 12.4 wheel 都兼容(`cu121` / `cu124`)。
+- **FP16**:支持但**性能不优**(Pascal 没有 Volta+ 的 Tensor Core)。**用 FP32 即可**,我们 34M 参数 FP32 vRAM <2GB,16GB 富裕得离谱。
+- **Kaggle Notebook P100**:免费 30h/周,但是**评测的目标环境**(无网络、`/kaggle/working` 只读 9GB)。**不建议在 Kaggle 跑长基准**,留给最终提交用;benchmark 走 Vast.ai/自托管 P100。
+- **预期 fps**:本地 CPU 1.2 fps → P100 预计 **20-50 fps**(模型小 + batch 64 跑 BCE,主要 overhead 在 forward+backward)。500 步从 8min CPU 变 ~30s P100。
+- **跑全 25 demo 1h/game**:25h × $0.3 = **~$7.5**(Vast.ai)。Kaggle 免费但要拆分成 ≤12h notebook,中断恢复就靠 `runs/<tag>/results.json` 的 checkpoint。
 
 ## 2. 实例上一次性 setup
 
@@ -28,8 +36,9 @@ cd arc-agi-3-pre
 uv sync
 
 # 4. **覆盖** torch 为 CUDA 版(关键!)
-#    选 cu124(对应 CUDA 12.4),如机器是 12.1 则用 cu121
-uv pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124
+#    P100 (Pascal compute_60):cu121 最稳;cu124 也行
+#    L4/A10/3090 (Ampere/Ada):cu124 优先
+uv pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
 
 # 5. 验证 CUDA 可用
 uv run python -c "import torch; print('cuda:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-')"
@@ -46,7 +55,7 @@ echo "ARC_API_KEY=<你的 key>" > .env
 uv run python scripts/train_sg.py --game cn04 --device cuda --steps 2000 --log-every 100
 ```
 
-**期望 fps**:CPU 上 1.2 fps;GPU(L4 / A10 / 3090)预计 30–80 fps。如果 GPU fps 不到 10,检查 batch / cuda init / I/O 瓶颈。
+**期望 fps**:CPU 1.2 → P100 **20-50** → L4/A10/3090 30-80 → A100 80-150。如果 GPU fps 不到 10,检查 batch size、cuda init、numpy↔tensor 拷贝、I/O 瓶颈。
 
 ### 3.2 全 25 demo 1 小时/游戏(总 ~25h GPU 时长)
 
