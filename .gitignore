@@ -1,0 +1,30 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets and env
+.env
+.env.*
+!.env.example
+
+# External reference repos (not part of our code)
+ref/
+
+# Run artifacts
+runs/
+scorecards/
+frames/
+*.pkl
+*.npz
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
