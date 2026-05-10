@@ -118,6 +118,8 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--tag", type=str, default="benchmark", help="run tag (used for output dir)")
     p.add_argument("--no-coord-prior", action="store_true")
+    p.add_argument("--segment-prior", action="store_true",
+                   help="layer in 4-connected segment-equalization (dolphin-style action-space compression)")
     p.add_argument("--log-every", type=int, default=200)
     args = p.parse_args()
 
@@ -156,6 +158,7 @@ def main() -> None:
         agent = SGBaselineAgent(
             device=args.device,
             use_coord_prior=not args.no_coord_prior,
+            enable_segment_prior=args.segment_prior,
             seed=args.seed,
         )
         steps_path = out_dir / f"{gid}.steps.jsonl"

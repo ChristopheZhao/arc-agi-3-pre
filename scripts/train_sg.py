@@ -45,6 +45,8 @@ def main() -> None:
                    help="don't wipe model+buffer on level-up (vs SG default)")
     p.add_argument("--no-coord-prior", action="store_true",
                    help="disable the static-pixel + background-color click prior")
+    p.add_argument("--segment-prior", action="store_true",
+                   help="layer in 4-connected segment-equalization on top of static prior")
     p.add_argument("--tag", type=str, default="", help="extra scorecard tag")
     args = p.parse_args()
 
@@ -75,6 +77,7 @@ def main() -> None:
         device=args.device,
         train_frequency=args.train_freq,
         use_coord_prior=not args.no_coord_prior,
+        enable_segment_prior=args.segment_prior,
         seed=args.seed,
     )
     LOG.info("agent on device=%s, model params=%d",

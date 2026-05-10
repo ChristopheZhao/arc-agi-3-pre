@@ -121,6 +121,8 @@ class SGBaselineAgent:
         use_coord_prior: bool = True,
         prior_mask_after_frames: int = 20,
         prior_background_downweight: float = 0.1,
+        enable_segment_prior: bool = False,
+        prior_min_segment_size: int = 3,
         seed: int = 0,
     ) -> None:
         self.device = torch.device(device)
@@ -143,6 +145,8 @@ class SGBaselineAgent:
         self.segmenter = StaticPriorBuilder(
             mask_after_frames=prior_mask_after_frames,
             background_downweight=prior_background_downweight,
+            enable_segment_prior=enable_segment_prior,
+            min_segment_size=prior_min_segment_size,
         ) if use_coord_prior else None
 
         self.current_levels_completed = -1
