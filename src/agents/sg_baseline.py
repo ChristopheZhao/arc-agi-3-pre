@@ -25,6 +25,8 @@ import torch.optim as optim
 
 from arcengine import FrameData, GameAction, GameState
 
+from src.perception.segmenter import StaticPriorBuilder
+
 LOG = logging.getLogger(__name__)
 
 
@@ -116,6 +118,9 @@ class SGBaselineAgent:
         train_frequency: int = 5,
         action_entropy_coef: float = 1e-4,
         coord_entropy_coef: float = 1e-5,
+        use_coord_prior: bool = True,
+        prior_mask_after_frames: int = 20,
+        prior_background_downweight: float = 0.1,
         seed: int = 0,
     ) -> None:
         self.device = torch.device(device)
@@ -125,6 +130,7 @@ class SGBaselineAgent:
         self.train_frequency = train_frequency
         self.action_entropy_coef = action_entropy_coef
         self.coord_entropy_coef = coord_entropy_coef
+        self.use_coord_prior = use_coord_prior
 
         self.rng = np.random.default_rng(seed)
         torch.manual_seed(seed)
@@ -133,6 +139,11 @@ class SGBaselineAgent:
         self.optimizer: Optional[optim.Optimizer] = None
         self.experience_buffer: deque = deque(maxlen=buffer_size)
         self.experience_hashes: set = set()
+
+        self.segmenter = StaticPriorBuilder(
+            mask_after_frames=prior_mask_after_frames,
+            background_downweight=prior_background_downweight,
+        ) if use_coord_prior else None
 
         self.current_levels_completed = -1
         self.action_counter = 0
@@ -155,16 +166,26 @@ class SGBaselineAgent:
             self.experience_hashes.clear()
             if reset_model:
                 self._init_model()
+            if self.segmenter is not None:
+                self.segmenter.reset()
             self.current_levels_completed = frame.levels_completed
             return True
         return False
 
-    def frame_to_tensor(self, frame: FrameData) -> torch.Tensor:
-        """Convert FrameData.frame (list[N_subframes][64][64] palette idx) -> (16, 64, 64) float."""
+    def _frame_2d(self, frame: FrameData) -> np.ndarray:
+        """Last subframe as a (64, 64) int64 palette grid."""
         arr = np.array(frame.frame, dtype=np.int64)
         if arr.ndim == 3:
-            arr = arr[-1]                          # take last subframe
+            arr = arr[-1]
         assert arr.shape == (self.GRID, self.GRID), f"got {arr.shape}"
+        return arr
+
+    def frame_to_tensor(self, frame: FrameData) -> torch.Tensor:
+        """Convert FrameData.frame (list[N_subframes][64][64] palette idx) -> (16, 64, 64) float.
+
+        Pure: does NOT update segmenter stats. Use choose_action for the canonical
+        per-step observation path."""
+        arr = self._frame_2d(frame)
         t = torch.zeros(self.NUM_COLOURS, self.GRID, self.GRID, dtype=torch.float32)
         t.scatter_(0, torch.from_numpy(arr).unsqueeze(0), 1)
         return t.to(self.device)
@@ -176,10 +197,22 @@ class SGBaselineAgent:
         if frame.state in (GameState.NOT_PLAYED, GameState.GAME_OVER):
             return GameAction.RESET, None, -1
 
-        x_in = self.frame_to_tensor(frame).unsqueeze(0)
+        arr_2d = self._frame_2d(frame)
+        if self.segmenter is not None:
+            self.segmenter.observe(arr_2d)
+            prior = self.segmenter.click_prior(arr_2d)
+        else:
+            prior = None
+
+        t = torch.zeros(self.NUM_COLOURS, self.GRID, self.GRID, dtype=torch.float32)
+        t.scatter_(0, torch.from_numpy(arr_2d).unsqueeze(0), 1)
+        x_in = t.to(self.device).unsqueeze(0)
+
         with torch.no_grad():
             logits = self.model(x_in).squeeze(0)
-        action_idx, coords, coord_idx = self._sample(logits, frame.available_actions or [])
+        action_idx, coords, coord_idx = self._sample(
+            logits, frame.available_actions or [], coord_prior=prior,
+        )
 
         if action_idx < 5:
             return self.ACTION_LIST[action_idx], None, action_idx
@@ -239,7 +272,10 @@ class SGBaselineAgent:
     # ---- internals ----
 
     def _sample(
-        self, logits: torch.Tensor, available_actions: list[int],
+        self,
+        logits: torch.Tensor,
+        available_actions: list[int],
+        coord_prior: Optional[np.ndarray] = None,
     ) -> tuple[int, Optional[tuple[int, int]], Optional[int]]:
         action_logits = logits[:5].clone()
         coord_logits = logits[5:].clone()
@@ -257,6 +293,11 @@ class SGBaselineAgent:
 
         action_p = torch.sigmoid(action_logits)
         coord_p = torch.sigmoid(coord_logits) / self.NUM_COORDS
+
+        if coord_prior is not None and action6_ok:
+            prior_t = torch.from_numpy(coord_prior.reshape(-1)).to(coord_p.device).to(coord_p.dtype)
+            coord_p = coord_p * prior_t
+
         all_p = torch.cat([action_p, coord_p])
         s = all_p.sum()
         if not torch.isfinite(s) or s.item() <= 0:

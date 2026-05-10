@@ -43,6 +43,9 @@ def main() -> None:
     p.add_argument("--log-every", type=int, default=25, help="log progress every N steps")
     p.add_argument("--no-reset-on-level", action="store_true",
                    help="don't wipe model+buffer on level-up (vs SG default)")
+    p.add_argument("--no-coord-prior", action="store_true",
+                   help="disable the static-pixel + background-color click prior")
+    p.add_argument("--tag", type=str, default="", help="extra scorecard tag")
     args = p.parse_args()
 
     if not os.getenv("ARC_API_KEY"):
@@ -56,12 +59,24 @@ def main() -> None:
     LOG.info("game = %s  (baseline_actions per level = %s)",
              target.game_id, getattr(target, "baseline_actions", None))
 
-    card_id = arc.create_scorecard(tags=["sg-baseline-sanity", args.device])
+    tags = ["sg-baseline-sanity", args.device]
+    if not args.no_coord_prior:
+        tags.append("coord-prior")
+    if args.no_reset_on_level:
+        tags.append("no-level-reset")
+    if args.tag:
+        tags.append(args.tag)
+    card_id = arc.create_scorecard(tags=tags)
     env = arc.make(target.game_id, seed=args.seed, scorecard_id=card_id)
     if env is None:
         LOG.error("arcade.make returned None"); sys.exit(2)
 
-    agent = SGBaselineAgent(device=args.device, train_frequency=args.train_freq, seed=args.seed)
+    agent = SGBaselineAgent(
+        device=args.device,
+        train_frequency=args.train_freq,
+        use_coord_prior=not args.no_coord_prior,
+        seed=args.seed,
+    )
     LOG.info("agent on device=%s, model params=%d",
              agent.device, sum(p.numel() for p in agent.model.parameters()))
 
@@ -105,12 +120,13 @@ def main() -> None:
             fps = (step + 1) / max(elapsed, 1e-3)
             ls = last_stats
             buf = len(agent.experience_buffer)
+            prior_frac = (agent.segmenter.fraction_active() if agent.segmenter else 1.0)
             LOG.info(
                 "step %4d %4.1fs %5.1f fps  L=%d/%d  buf=%d  pos=%d neg=%d  "
-                "act=%s  loss=%s  acc=%s",
+                "prior_active=%.2f  act=%s  loss=%s  acc=%s",
                 step, elapsed, fps,
                 new_frame.levels_completed, new_frame.win_levels, buf,
-                pos_seen, neg_seen,
+                pos_seen, neg_seen, prior_frac,
                 action.name + (f"({data['x']},{data['y']})" if data else ""),
                 f"{ls.main_loss:.3f}" if ls else "-",
                 f"{ls.accuracy:.2f}" if ls else "-",
