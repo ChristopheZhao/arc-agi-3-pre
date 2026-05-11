@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import cloudpickle
 import numpy as np
 
 from arcengine import ActionInput, GameAction
@@ -139,7 +138,12 @@ class BFSSolver:
     @staticmethod
     def _full_hash(game, frame: np.ndarray) -> str:
         """cloudpickle the whole game object — slow (~3 ms) but captures sprite
-        positions and any non-scalar internal state that frame hashing misses."""
+        positions and any non-scalar internal state that frame hashing misses.
+
+        Lazy import so the BFS default path (hash_mode='frame') doesn't require
+        cloudpickle to be installed (Kaggle Internet=Off submission env).
+        """
+        import cloudpickle
         return hashlib.md5(cloudpickle.dumps(game)).hexdigest()[:16]
 
     def _hash(self, game, frame: np.ndarray) -> str:
