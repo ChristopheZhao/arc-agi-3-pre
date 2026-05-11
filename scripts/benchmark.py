@@ -135,6 +135,7 @@ def main() -> None:
         LOG.info("found %d existing results in %s; will skip those", len(done), results_path)
 
     arc = Arcade(operation_mode=OperationMode.NORMAL)
+    LOG.info("arcade mode=%s base_url=%s", arc.operation_mode.value, arc.arc_base_url)
     envs = arc.get_environments()
     LOG.info("catalog: %d games", len(envs))
 

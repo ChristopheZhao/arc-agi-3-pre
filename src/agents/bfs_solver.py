@@ -36,6 +36,8 @@ import numpy as np
 
 from arcengine import ActionInput, GameAction
 
+from src.perception.segmenter import label_4conn_same_color
+
 LOG = logging.getLogger(__name__)
 
 
@@ -95,6 +97,8 @@ class BFSSolver:
         max_depth: int = 30,
         click_step: int = 2,
         hash_mode: str = "frame",     # "frame" | "full"
+        dense_scan: bool = True,      # if normal scan yields 0 actions, try segment-derived dense candidates
+        dense_min_segment: int = 2,
     ) -> None:
         self.game_path = Path(game_path)
         self.class_name = class_name
@@ -106,6 +110,8 @@ class BFSSolver:
         if hash_mode not in ("frame", "full"):
             raise ValueError(f"hash_mode must be 'frame' or 'full', got {hash_mode!r}")
         self.hash_mode = hash_mode
+        self.dense_scan = dense_scan
+        self.dense_min_segment = dense_min_segment
         self.game_cls = None
         self.solutions: dict[int, list[tuple[int, Optional[dict]]]] = {}
 
@@ -154,6 +160,90 @@ class BFSSolver:
         # second is the canonical level start. We follow that convention.
         r = g.perform_action(ActionInput(id=GameAction.RESET), raw=True)
         return g, r
+
+    def _segment_click_candidates(self, frame: np.ndarray) -> list[tuple[int, int]]:
+        """One representative pixel per 4-connected same-color segment.
+
+        Unlike the StaticPriorBuilder layer, we do NOT skip background-color
+        segments — for sniper-click games (e.g. lp85) the required target may
+        sit on a background-colored cell. Tiny specks under `dense_min_segment`
+        are dropped as likely antialiasing.
+
+        Picks the centroid; if the centroid pixel doesn't belong to the segment
+        (concave shape), falls back to the first labelled pixel.
+        """
+        labels, n = label_4conn_same_color(frame)
+        if n == 0:
+            return []
+        H, W = frame.shape
+        # gather one (y, x) per label
+        candidates: list[tuple[int, int]] = []
+        # bincount of labels gives sizes; per-label sum of x and y for centroid
+        flat_lbl = labels.ravel()
+        sizes = np.bincount(flat_lbl, minlength=n + 1)
+        ys, xs = np.indices((H, W))
+        sum_y = np.bincount(flat_lbl, weights=ys.ravel(), minlength=n + 1)
+        sum_x = np.bincount(flat_lbl, weights=xs.ravel(), minlength=n + 1)
+        for lbl in range(1, n + 1):
+            if sizes[lbl] < self.dense_min_segment:
+                continue
+            cy = int(round(sum_y[lbl] / sizes[lbl]))
+            cx = int(round(sum_x[lbl] / sizes[lbl]))
+            cy = min(max(cy, 0), H - 1)
+            cx = min(max(cx, 0), W - 1)
+            if labels[cy, cx] != lbl:
+                # centroid fell outside segment — pick any in-segment pixel
+                idx = int(np.argmax(flat_lbl == lbl))
+                cy, cx = idx // W, idx % W
+            candidates.append((cy, cx))
+        return candidates
+
+    def _dense_scan_actions(
+        self,
+        game,
+        f0: np.ndarray,
+        candidates: list[tuple[int, int]],
+        timeout: float,
+    ) -> list[tuple[int, Optional[dict]]]:
+        """Probe each candidate ACTION6 click. Accept if frame changed OR
+        levels_completed advanced OR _current_level_index advanced OR the
+        available_actions set changed (the action 'unlocked' something).
+        Dedupe by post-effect frame hash."""
+        actions: list[tuple[int, Optional[dict]]] = []
+        seen: set[str] = set()
+        avail0 = frozenset(getattr(game, "_available_actions", []))
+        cli0 = getattr(game, "_current_level_index", None)
+        t0 = time.time()
+        for (y, x) in candidates:
+            if time.time() - t0 > timeout:
+                LOG.info("dense scan timeout at %d/%d candidates", len(actions), len(candidates))
+                break
+            g = copy.deepcopy(game)
+            try:
+                r = g.perform_action(
+                    ActionInput(id=GameAction.ACTION6,
+                                data={"x": x, "y": y, "game_id": "bfs"}),
+                    raw=True,
+                )
+            except Exception:
+                continue
+            if not r.frame:
+                continue
+            f_after = self._to_2d(r.frame[-1])
+            changed = (
+                np.sum(f_after != f0) > 0
+                or r.levels_completed > 0  # we BFS from a fresh level so any progress counts
+                or (cli0 is not None and getattr(g, "_current_level_index", cli0) != cli0)
+                or frozenset(getattr(g, "_available_actions", [])) != avail0
+            )
+            if not changed:
+                continue
+            h = self._frame_hash(f_after)
+            if h in seen:
+                continue
+            seen.add(h)
+            actions.append((6, {"x": x, "y": y, "game_id": "bfs"}))
+        return actions
 
     def _scan_actions(self, game, f0: np.ndarray, bg_color: int) -> list[tuple[int, Optional[dict]]]:
         """Probe each available simple action and step-2 click positions. Return actions
@@ -245,6 +335,17 @@ class BFSSolver:
                         break
                 except Exception:
                     pass
+            if not actions and self.dense_scan and 6 in list(game._available_actions):
+                # Dense fallback for sniper-click games: probe one pixel per
+                # 4-connected segment (incl. background-color segments). Catches
+                # lp85-style targets that step=2 + bg-skip misses.
+                cands = self._segment_click_candidates(f0)
+                LOG.info("L%d: dense scan over %d segment candidates", level_idx, len(cands))
+                actions = self._dense_scan_actions(
+                    game, f0, cands, timeout=self.scan_timeout * 4,
+                )
+                if actions:
+                    LOG.info("L%d: dense scan rescued %d actions", level_idx, len(actions))
             if not actions:
                 return BFSResult(None, 0, 0, time.time() - t_total, "no_actions")
 
