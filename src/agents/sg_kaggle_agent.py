@@ -16,6 +16,7 @@ To use:
 """
 
 import hashlib
+import json
 import logging
 import os
 import random
@@ -214,8 +215,7 @@ class MyAgent(Agent):
         if frame.guid:
             self.guid = frame.guid
         if hasattr(self, "recorder") and not self.is_playback:
-            import json
-            self.recorder.record(__import__('json').loads(frame.model_dump_json()))
+            self.recorder.record(json.loads(frame.model_dump_json()))
 
     def _get_level(self, frame: FrameData) -> int:
         return getattr(frame, 'score', None) or frame.levels_completed
@@ -290,10 +290,17 @@ class MyAgent(Agent):
         action_probs = torch.sigmoid(action_logits)
         coord_probs = torch.sigmoid(coord_logits)
 
-        # === our addition: multiply prior into coord_probs ===
-        prior = self.prior.click_prior(frame_2d)        # (64, 64) float32
-        prior_t = torch.from_numpy(prior.reshape(-1)).to(coord_probs.device).to(coord_probs.dtype)
-        coord_probs = coord_probs * prior_t
+        # === our addition: bias coord sampling toward non-static, non-bg, small-segment cells
+        # IMPORTANT: renormalize so total coord-side mass stays the same as no-prior case.
+        # Otherwise prior (avg < 1) would shrink coord total → ACTION6 almost never chosen.
+        prior = self.prior.click_prior(frame_2d).reshape(-1)  # (4096,) float32
+        prior_t = torch.from_numpy(prior).to(coord_probs.device).to(coord_probs.dtype)
+        orig_total = coord_probs.sum()
+        weighted = coord_probs * prior_t
+        new_total = weighted.sum()
+        if new_total.item() > 1e-9:
+            coord_probs = weighted * (orig_total / new_total)
+        # else: prior killed everything (all cells static or masked); keep unweighted coord_probs
 
         # match sample's scaling: coord-side probabilities split into per-pixel mass
         coord_probs_scaled = coord_probs / self.num_coordinates
@@ -301,13 +308,9 @@ class MyAgent(Agent):
         all_p = torch.cat([action_probs, coord_probs_scaled])
         total = all_p.sum()
         if total.item() == 0:
-            # nothing has weight (prior killed everything + masks too) — fall back to action_probs only
-            all_p = torch.cat([action_probs, torch.zeros_like(coord_probs_scaled)])
-            total = all_p.sum()
-            if total.item() == 0:
-                # last resort: pick any available simple action uniformly
-                idx = int(np.argmax((action_logits > float('-inf')).cpu().numpy()))
-                return idx, None, None
+            # last resort — pick any available simple action
+            idx = int(np.argmax((action_logits > float('-inf')).cpu().numpy()))
+            return idx, None, None
         all_p = (all_p / total).cpu().numpy()
         sel = int(np.random.choice(len(all_p), p=all_p))
         if sel < 5:
@@ -336,6 +339,14 @@ class MyAgent(Agent):
                 self.prev_action_idx = None
                 action = GameAction.RESET
                 action.reasoning = "game needs reset"
+                return action
+
+            # Guard against empty/missing frame data (sample also has this check)
+            if not latest_frame.frame:
+                self.prev_frame = None
+                self.prev_action_idx = None
+                action = random.choice(self.action_list[:5])
+                action.reasoning = "empty frame, random fallback"
                 return action
 
             frame_2d = np.array(latest_frame.frame, dtype=np.int64)[-1]
