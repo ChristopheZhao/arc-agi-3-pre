@@ -121,6 +121,9 @@ def main() -> None:
     p.add_argument("--segment-prior", action="store_true",
                    help="layer in 4-connected segment-equalization (dolphin-style action-space compression)")
     p.add_argument("--log-every", type=int, default=200)
+    p.add_argument("--total-budget-min", type=float, default=0,
+                   help="hard wall-clock cap for the whole run; 0 = unlimited. "
+                        "Stops iterating games when reached so we close the scorecard.")
     args = p.parse_args()
 
     if not os.getenv("ARC_API_KEY"):
@@ -150,33 +153,50 @@ def main() -> None:
     card_id = arc.create_scorecard(tags=[args.tag, args.device, "sg-bench"])
     LOG.info("scorecard: %s", card_id)
 
-    results = list(done.values())
-    for env_info in selected:
-        gid = env_info.game_id
-        if gid in done:
-            LOG.info("[%s] skip (already done in %s)", gid, results_path); continue
-        LOG.info("=== %s (baseline=%s) ===", gid, getattr(env_info, "baseline_actions", None))
-        agent = SGBaselineAgent(
-            device=args.device,
-            use_coord_prior=not args.no_coord_prior,
-            enable_segment_prior=args.segment_prior,
-            seed=args.seed,
-        )
-        steps_path = out_dir / f"{gid}.steps.jsonl"
-        summary = play_one(arc, agent, gid, args.budget_min * 60, card_id, args.log_every, steps_path)
-        results.append(summary)
-        results_path.write_text(json.dumps(results, indent=2))
-        LOG.info("[%s] -> %s", gid, summary)
+    total_deadline = (time.time() + args.total_budget_min * 60) if args.total_budget_min > 0 else None
+    if total_deadline:
+        LOG.info("total wall-clock budget: %.1f min (hard cap)", args.total_budget_min)
 
-    card = arc.close_scorecard(card_id)
-    if card is not None:
-        (out_dir / "scorecard.json").write_text(card.model_dump_json(indent=2))
-        LOG.info("=== final scorecard total = %s ===", card.score)
-        for env_entry in card.environments:
-            for run in env_entry.runs:
-                LOG.info("%s  state=%s actions=%d levels=%d  scores=%s",
-                         env_entry.id, run.state.name, run.actions, run.levels_completed,
-                         [round(s, 3) for s in run.level_scores])
+    results = list(done.values())
+    try:
+        for env_info in selected:
+            if total_deadline and time.time() >= total_deadline:
+                LOG.warning("=== TOTAL BUDGET REACHED; stopping iteration to close scorecard ===")
+                break
+            gid = env_info.game_id
+            if gid in done:
+                LOG.info("[%s] skip (already done in %s)", gid, results_path); continue
+            # Cap per-game budget by what's left of the total budget.
+            per_game_s = args.budget_min * 60
+            if total_deadline:
+                per_game_s = min(per_game_s, max(30, total_deadline - time.time() - 30))
+            remaining_min = (total_deadline - time.time()) / 60 if total_deadline else float('inf')
+            LOG.info("=== %s (baseline=%s, %.1f min remaining) ===",
+                     gid, getattr(env_info, "baseline_actions", None), remaining_min)
+            agent = SGBaselineAgent(
+                device=args.device,
+                use_coord_prior=not args.no_coord_prior,
+                enable_segment_prior=args.segment_prior,
+                seed=args.seed,
+            )
+            steps_path = out_dir / f"{gid}.steps.jsonl"
+            summary = play_one(arc, agent, gid, per_game_s, card_id, args.log_every, steps_path)
+            results.append(summary)
+            results_path.write_text(json.dumps(results, indent=2))
+            LOG.info("[%s] -> %s", gid, summary)
+    finally:
+        try:
+            card = arc.close_scorecard(card_id)
+            if card is not None:
+                (out_dir / "scorecard.json").write_text(card.model_dump_json(indent=2))
+                LOG.info("=== final scorecard total = %s ===", card.score)
+                for env_entry in card.environments:
+                    for run in env_entry.runs:
+                        LOG.info("%s  state=%s actions=%d levels=%d  scores=%s",
+                                 env_entry.id, run.state.name, run.actions, run.levels_completed,
+                                 [round(s, 3) for s in run.level_scores])
+        except Exception:
+            LOG.exception("close_scorecard failed")
 
 
 if __name__ == "__main__":

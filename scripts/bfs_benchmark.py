@@ -152,6 +152,10 @@ def main() -> None:
     p.add_argument("--hash-mode", type=str, default="frame", choices=["frame", "full"])
     p.add_argument("--no-dense-scan", action="store_true")
     p.add_argument("--limit", type=int, default=0, help="stop after N games (0 = no limit)")
+    p.add_argument("--total-budget-min", type=float, default=0,
+                   help="hard wall-clock cap for the whole run in minutes; 0 = unlimited. "
+                        "When reached, stop iterating games and close the scorecard. "
+                        "On Kaggle this MUST be set well below the runtime cap so we close.")
     args = p.parse_args()
 
     if not os.getenv("ARC_API_KEY"):
@@ -185,37 +189,54 @@ def main() -> None:
     card_id = arc.create_scorecard(tags=[args.tag, "bfs"])
     LOG.info("scorecard: %s", card_id)
 
-    results: list[dict] = list(done.values())
-    for env_info in selected:
-        gid = env_info.game_id
-        if gid in done:
-            LOG.info("[%s] skip (already in %s)", gid, results_path); continue
-        LOG.info("=== %s (baseline=%s) ===", gid, getattr(env_info, "baseline_actions", None))
-        try:
-            summary = solve_one(
-                arc, gid, card_id,
-                scan_to=args.scan_timeout, bfs_to=args.bfs_timeout,
-                max_levels=args.max_levels, hash_mode=args.hash_mode,
-                dense_scan=not args.no_dense_scan,
-            )
-        except Exception as e:
-            LOG.exception("[%s] crashed", gid)
-            summary = {"game_id": gid, "error": f"{type(e).__name__}: {e}"}
-        results.append(summary)
-        results_path.write_text(json.dumps(results, indent=2))
-        LOG.info("[%s] wrote summary -> %s", gid, results_path)
+    total_deadline = (time.time() + args.total_budget_min * 60) if args.total_budget_min > 0 else None
+    if total_deadline:
+        LOG.info("total wall-clock budget: %.1f min (hard cap; will close scorecard early)",
+                 args.total_budget_min)
 
-    card = arc.close_scorecard(card_id)
-    if card is not None:
-        (out_dir / "scorecard.json").write_text(card.model_dump_json(indent=2))
-        LOG.info("=== final scorecard total = %s ===", card.score)
-        for env_entry in card.environments:
-            for run in env_entry.runs:
-                LOG.info(
-                    "%s state=%s actions=%d levels=%d scores=%s",
-                    env_entry.id, run.state.name, run.actions, run.levels_completed,
-                    [round(s, 3) for s in run.level_scores],
+    results: list[dict] = list(done.values())
+    try:
+        for env_info in selected:
+            if total_deadline and time.time() >= total_deadline:
+                LOG.warning("=== TOTAL BUDGET REACHED (%.1f min); stopping iteration to close scorecard ===",
+                            args.total_budget_min)
+                break
+            gid = env_info.game_id
+            if gid in done:
+                LOG.info("[%s] skip (already in %s)", gid, results_path); continue
+            remaining_min = (total_deadline - time.time()) / 60 if total_deadline else float('inf')
+            LOG.info("=== %s (baseline=%s, %.1f min remaining) ===",
+                     gid, getattr(env_info, "baseline_actions", None), remaining_min)
+            try:
+                summary = solve_one(
+                    arc, gid, card_id,
+                    scan_to=args.scan_timeout, bfs_to=args.bfs_timeout,
+                    max_levels=args.max_levels, hash_mode=args.hash_mode,
+                    dense_scan=not args.no_dense_scan,
                 )
+            except Exception as e:
+                LOG.exception("[%s] crashed", gid)
+                summary = {"game_id": gid, "error": f"{type(e).__name__}: {e}"}
+            results.append(summary)
+            results_path.write_text(json.dumps(results, indent=2))
+            LOG.info("[%s] wrote summary -> %s", gid, results_path)
+    finally:
+        # ALWAYS close the scorecard, even on exception/break — without close,
+        # Kaggle gateway returns 0 score.
+        try:
+            card = arc.close_scorecard(card_id)
+            if card is not None:
+                (out_dir / "scorecard.json").write_text(card.model_dump_json(indent=2))
+                LOG.info("=== final scorecard total = %s ===", card.score)
+                for env_entry in card.environments:
+                    for run in env_entry.runs:
+                        LOG.info(
+                            "%s state=%s actions=%d levels=%d scores=%s",
+                            env_entry.id, run.state.name, run.actions, run.levels_completed,
+                            [round(s, 3) for s in run.level_scores],
+                        )
+        except Exception:
+            LOG.exception("close_scorecard failed")
 
 
 if __name__ == "__main__":
