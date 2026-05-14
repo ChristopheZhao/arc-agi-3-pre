@@ -171,7 +171,7 @@ class ActionModel(nn.Module):
 class MyAgent(Agent):
     """CNN bandit + segment-prior coord sampler. Resets model per level."""
 
-    MAX_ACTIONS = float('inf')
+    MAX_ACTIONS = 200
     _MAX_FRAMES = 10
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -221,7 +221,7 @@ class MyAgent(Agent):
         return getattr(frame, 'score', None) or frame.levels_completed
 
     def _has_time_elapsed(self) -> bool:
-        return (time.time() - self.start_time) >= 8 * 3600 - 5 * 60
+        return (time.time() - self.start_time) >= 60
 
     def is_done(self, frames, latest_frame) -> bool:
         try:
@@ -320,19 +320,21 @@ class MyAgent(Agent):
 
     def choose_action(self, frames, latest_frame) -> GameAction:
         try:
-            # Level transition → reset model + buffer
+            # Level transition → reset buffer/prior only; keep CNN weights to accumulate across levels.
+            # CNN is lazily initialized on first call below (see "if self.action_model is None").
             current = self._get_level(latest_frame)
             if current != self.current_score:
                 self.experience_buffer.clear()
                 self.experience_hashes.clear()
-                self.action_model = ActionModel(input_channels=self.num_colours,
-                                                grid_size=self.grid_size).to(self.device)
-                self.optimizer = optim.Adam(self.action_model.parameters(), lr=0.0001)
+                if self.action_model is None:
+                    self.action_model = ActionModel(input_channels=self.num_colours,
+                                                    grid_size=self.grid_size).to(self.device)
+                    self.optimizer = optim.Adam(self.action_model.parameters(), lr=0.0001)
                 self.prev_frame = None
                 self.prev_action_idx = None
                 self.current_score = current
                 self.prior.reset()
-                print(f"[{self.game_id}] level changed → reset; lvl={current}")
+                print(f"[{self.game_id}] level changed → reset buffer+prior; lvl={current}")
 
             if latest_frame.state in [GameState.NOT_PLAYED, GameState.GAME_OVER]:
                 self.prev_frame = None
