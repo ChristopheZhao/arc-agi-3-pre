@@ -34,3 +34,8 @@ environment_files/
 .idea/
 .vscode/
 .DS_Store
+
+# Local workflow artifacts (sdd-plan-maintainer + session-handoff)
+# Per-session governance files, not project deliverables.
+docs/plans/
+docs/session-handoff/
