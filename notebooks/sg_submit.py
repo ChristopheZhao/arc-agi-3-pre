@@ -23,7 +23,12 @@ from pathlib import Path
 
 COMPETITION_BUNDLE = "arc-prize-2026-arc-agi-3"
 DEFAULT_GATEWAY_URL = "http://gateway:8001"
-AGENT_MARKER = "src/agents/sg_kaggle_agent.py"
+# Default agent: Sprint B tabular novelty + frontier + segment prior.
+# Override with env var SG_AGENT_FILE to fall back to sg_kaggle_agent.py (Sprint A CNN).
+DEFAULT_AGENT_FILE = "src/agents/sg_tabular_agent.py"
+AGENT_MARKER = os.environ.get("SG_AGENT_FILE", DEFAULT_AGENT_FILE)
+# AGENT_MARKER is still used by find_repo_src() to locate the repo, so we
+# preserve the same marker name conceptually but allow the actual file to vary.
 RUNNER_MARKER = "agents/agent.py"
 
 
